@@ -2,48 +2,43 @@
 #include <semphr.h>
 #include <Servo.h>
 
-// PINOS
-// Pinos ponte H
-#define PIN_MOTOR_A   2  
-#define PIN_MOTOR_B   3   
-// Pino Buzzer
-#define PIN_BUZZER    4
-// Pinos LED
-#define PIN_LED_R     5
-#define PIN_LED_G     6
-#define PIN_LED_B     7
-// Pinos sensor
-#define PIN_SENSOR    8
-// Pinos servos
-#define PIN_SERVO_1   9
-#define PIN_SERVO_2   10
+//  PINOS 
+#define PIN_MOTOR_A   2  // Ponte H
+#define PIN_MOTOR_B   3  // Ponte H 
+#define PIN_BUZZER    4  // Buzzer
+#define PIN_LED_R     5  // led vermelho
+#define PIN_LED_G     6  // led verde
+#define PIN_LED_B     7  // lede azul
+#define PIN_SENSOR    8  // Sensor infravermelho
+#define PIN_SERVO_1   9  // Servo Sensor
+#define PIN_SERVO_2   10 // Pan
+#define PIN_SERVO_3   11 // Tilt
 
-// Inversor de lógica
+// LÓGICA DE ESTADOS
 #define LIGADO    LOW
 #define DESLIGADO HIGH
 
-// Configurações globais
-#define ANGULO_CENTRO   90     // angulo 0 virtual do servo 
-#define AMPLITUDE       60     // Eixo de varredura do servo 1
-#define DELAY_VARREDURA 20     // velocidade de varredura
+//  CONFIGURAÇÕES DO SISTEMA 
+#define ANGULO_CENTRO   90     
+#define AMPLITUDE       60     
+#define TILT_DESCIDA    -38    // Offset mecânico do Tilt 
+#define OFFSET_PAN      30     // Offset mecânico no Pan
+#define DELAY_VARREDURA 20     
 #define ESTADO_COM_FOGO LOW  
 
-// Estados do sistema
-enum SystemState {
-  ESPERA,
-  BUSCA,
-  ALARME
-};
+// ESTADOS DO SISTEMA 
+enum SystemState { ESPERA, BUSCA, ALARME };
 
 volatile SystemState estadoAtual = ESPERA;
 volatile int posicaoServo1 = ANGULO_CENTRO;
 
 Servo servo1;
 Servo servo2;
-// Mutex da variavel compartilhada
+Servo servo3; 
+
 SemaphoreHandle_t xMutexPosicao;
 
-// Protótipos das tasks
+// PROTÓTIPOS DAS TASKS
 void TaskSensor(void *pvParameters);
 void TaskServo1(void *pvParameters);
 void TaskAtuadores(void *pvParameters);
@@ -61,7 +56,7 @@ void setup() {
   pinMode(PIN_MOTOR_A, OUTPUT);
   pinMode(PIN_MOTOR_B, OUTPUT);
 
-  // Estado Inicial do sistema
+  // Estado Inicial
   digitalWrite(PIN_BUZZER, DESLIGADO);
   digitalWrite(PIN_LED_R, DESLIGADO);
   digitalWrite(PIN_LED_G, DESLIGADO);
@@ -71,39 +66,43 @@ void setup() {
 
   servo1.attach(PIN_SERVO_1);
   servo2.attach(PIN_SERVO_2);
+  servo3.attach(PIN_SERVO_3); 
+  
+  // CALIBRAÇÃO APLICADA NO BOOT 
   servo1.write(ANGULO_CENTRO);
-  servo2.write(ANGULO_CENTRO);
+  servo2.write(ANGULO_CENTRO + OFFSET_PAN); // Já liga desalinhado de proposito
+  servo3.write(ANGULO_CENTRO); 
 
   xMutexPosicao = xSemaphoreCreateMutex();
 
-  // Prioridade das tasks
-  xTaskCreate(TaskSensor, "Sensor", 128, NULL, 4, NULL);     // Sensor
-  xTaskCreate(TaskAtuadores, "Atuadores", 128, NULL, 3, NULL); // Atuação
-  xTaskCreate(TaskServo1, "Servo1", 128, NULL, 2, NULL);     // Varredura
-  xTaskCreate(TaskSerial, "Serial", 128, NULL, 1, NULL);     // Comunicação
+  // Tasks 
+  xTaskCreate(TaskSensor, "Sens", 100, NULL, 4, NULL);     
+  xTaskCreate(TaskAtuadores, "Atua", 100, NULL, 3, NULL); 
+  xTaskCreate(TaskServo1, "Serv", 100, NULL, 2, NULL);     
+  xTaskCreate(TaskSerial, "Seri", 100, NULL, 1, NULL);     
 
-  Serial.println("Sistema Iniciado com Intertravamento de Seguranca.");
+  Serial.println(F("Sistema de combate iniciado."));
 }
 
-void loop() {
+void loop() {}
 
-}
-
-// Task 1 ( sensor )
+// TASK 1: SENSOR 
 void TaskSensor(void *pvParameters) {
   for (;;) {
     if (estadoAtual == BUSCA) {
       if (digitalRead(PIN_SENSOR) == ESTADO_COM_FOGO) {
         estadoAtual = ALARME;
-        Serial.println("!!! FOGO DETECTADO !!!");
+        Serial.println(F("!!! FOGO DETECTADO !!!"));
       }
     }
     vTaskDelay(60 / portTICK_PERIOD_MS); 
   }
 }
 
-// Task 2 ( atuadores )
+// TASK 2: ATUADORES 
 void TaskAtuadores(void *pvParameters) {
+  SystemState estadoAnterior = ESPERA; 
+  
   for (;;) {
     switch (estadoAtual) {
       case ESPERA:
@@ -113,7 +112,13 @@ void TaskAtuadores(void *pvParameters) {
         digitalWrite(PIN_BUZZER, DESLIGADO);
         digitalWrite(PIN_MOTOR_A, LOW);
         digitalWrite(PIN_MOTOR_B, LOW);
-        servo2.write(ANGULO_CENTRO);
+        
+        if (!servo2.attached()) servo2.attach(PIN_SERVO_2);
+        if (!servo3.attached()) servo3.attach(PIN_SERVO_3);
+        
+        // CALIBRAÇÃO APLICADA NA ESPERA 
+        servo2.write(ANGULO_CENTRO + OFFSET_PAN); 
+        servo3.write(ANGULO_CENTRO); 
         break;
 
       case BUSCA:
@@ -123,6 +128,10 @@ void TaskAtuadores(void *pvParameters) {
         digitalWrite(PIN_BUZZER, DESLIGADO);
         digitalWrite(PIN_MOTOR_A, LOW); 
         digitalWrite(PIN_MOTOR_B, LOW);
+        
+        // Embreagem Digital (corta a vibração do Pan e Tilt na busca)
+        if (servo2.attached()) servo2.detach();
+        if (servo3.attached()) servo3.detach();
         break;
 
       case ALARME:
@@ -130,22 +139,40 @@ void TaskAtuadores(void *pvParameters) {
         digitalWrite(PIN_LED_B, DESLIGADO);
         digitalWrite(PIN_LED_R, LIGADO);    
         digitalWrite(PIN_BUZZER, LIGADO);   
-        digitalWrite(PIN_MOTOR_A, HIGH); // Motor Combatendo
-        digitalWrite(PIN_MOTOR_B, LOW);
-        // Mutex garantindo que o servo 2 ( responsável por mirar o sistema de combate receba as cordenadas corretas)
-        int alvo;
+        
+        // 1. LEITURA SEGURA DO ALVO
+        int alvoPan = ANGULO_CENTRO; 
         if (xSemaphoreTake(xMutexPosicao, (TickType_t) 10) == pdTRUE) {
-          alvo = posicaoServo1;
+          alvoPan = posicaoServo1;
           xSemaphoreGive(xMutexPosicao);
-          servo2.write(alvo);
         }
+
+        // 2. RELIGA OS SERVOS
+        if (!servo2.attached()) servo2.attach(PIN_SERVO_2);
+        if (!servo3.attached()) servo3.attach(PIN_SERVO_3);
+        
+        // 3. COMANDA OS MOVIMENTOS
+        // CALIBRAÇÃO APLICADA NO ANGULO DE ATAQUE 
+        servo2.write(alvoPan + OFFSET_PAN); 
+        servo3.write(ANGULO_CENTRO - TILT_DESCIDA); 
+        
+        // 4. ATRASO SEGURO
+        if (estadoAnterior != ALARME) {
+            vTaskDelay(400 / portTICK_PERIOD_MS); 
+        }
+        
+        // 5. Ventoinha liga após os servos
+        digitalWrite(PIN_MOTOR_A, HIGH); 
+        digitalWrite(PIN_MOTOR_B, LOW);
         break;
     }
+    
+    estadoAnterior = estadoAtual;
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
 
-// Task 3 ( Varredura do sensor ) 
+// TASK 3: SERVO 1 (VARREDURA) 
 void TaskServo1(void *pvParameters) {
   int pos = ANGULO_CENTRO;
   int direcao = 1;
@@ -180,7 +207,7 @@ void TaskServo1(void *pvParameters) {
   }
 }
 
-// Task 4 ( SERIAL - COMANDO - PROTEÇÃO)
+// TASK 4: SERIAL 
 void TaskSerial(void *pvParameters) {
   for (;;) {
     if (Serial.available() > 0) {
@@ -188,34 +215,26 @@ void TaskSerial(void *pvParameters) {
       while(Serial.available() > 0) Serial.read();
 
       if ((c == 'I' || c == 'i') && estadoAtual == ESPERA) {
-        Serial.println("Iniciando...");
+        Serial.println(F("Iniciando..."));
         estadoAtual = BUSCA;
       }
       
-      // 
       else if (c == 'r' || c == 'R') {
-        Serial.println("Comando de Reset recebido...");
+        Serial.println(F("Comando de Reset recebido..."));
 
-        // Verificação do sensor para reset do sistema.
         if (digitalRead(PIN_SENSOR) == ESTADO_COM_FOGO) {
-          Serial.println(">> ALERTA: Fogo ainda presente! <<");
-          Serial.println(">> Reset BLOQUEADO. Aguardando extinção do fogo... <<");
+          Serial.println(F(">> ALERTA: Fogo ainda presente! <<"));
+          Serial.println(F(">> Reset BLOQUEADO. Aguardando extincao... <<"));
           
-          // O sistema fica preso neste loop 
-          // até o sensor indicar que o fogo acabou.
-          // Como TaskAtuadores tem prioridade maior, 
-          // o motor e o buzzer continuam funcionando normalmente.
           while (digitalRead(PIN_SENSOR) == ESTADO_COM_FOGO) {
-            Serial.print(".");
-            vTaskDelay(1000 / portTICK_PERIOD_MS); // Checagem a cada 1 segundo
+            Serial.print(F("."));
+            vTaskDelay(1000 / portTICK_PERIOD_MS); 
           }
-          
-          Serial.println("\n>> Fogo eliminado! Resetando agora. <<");
+          Serial.println(F("\n>> Fogo eliminado! Resetando agora. <<"));
         } 
         
-        // Fogo apagado ou sistema sem fogo
         estadoAtual = ESPERA;
-        Serial.println("Sistema em espera.");
+        Serial.println(F("Sistema em espera."));
       }
     }
     vTaskDelay(100 / portTICK_PERIOD_MS);
